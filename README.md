@@ -36,3 +36,27 @@ For instance, you can set the following environment variables:
 
 - `WILDLIVETOKENREFRESHER__REFRESH_INTERVAL__SECS`: Interval in seconds between token refreshes.
 - `WILDLIVETOKENREFRESHER__OIDC__CLIENT_SECRET`: OIDC client secret.
+
+## Container
+
+Build the Docker image:
+
+```bash
+podman build -t wildlive-token-refresher .
+```
+
+```bash
+VERSION=$(cargo metadata --format-version=1 | jq -r '.packages[] | select(.name=="wildlive-token-refresher") | .version')
+podman build -t wildlive-token-refresher:$VERSION .
+```
+
+Run the Docker container:
+
+```bash
+podman run --rm \
+    --env 'WILDLIVETOKENREFRESHER__OIDC__CLIENT_SECRET=<SECRET>' \
+    --network host \
+    wildlive-token-refresher
+```
+
+Adjust the environment variables and network settings as needed to configure the application.

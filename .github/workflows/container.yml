@@ -1,0 +1,38 @@
+name: Container Build and Push
+
+on:
+  push:
+    branches:
+      - main
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-container:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      CONTAINER_NAME: wildlive-token-refresher
+      TAG_NAME: latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Version
+        run: |
+          rustup update
+          VERSION=$(cargo metadata --format-version=1 | jq -r '.packages[] | select(.name=="wildlive-token-refresher") | .version')
+          echo "TAG_NAME=$VERSION" >> $GITHUB_ENV
+
+      - name: Build container
+        run: podman build -t ${{env.CONTAINER_NAME}}:${{env.TAG_NAME}} .
+
+      - name: Push image to quay.io
+        run: podman push ${{env.CONTAINER_NAME}}:${{env.TAG_NAME}} quay.io/geoengine/${{env.CONTAINER_NAME}}:${{env.TAG_NAME}}
