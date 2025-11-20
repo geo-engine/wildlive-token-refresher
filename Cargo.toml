@@ -1,0 +1,74 @@
+[package]
+name = "wildlive-token-refresher"
+version = "0.1.0"
+edition = "2024"
+publish = false
+authors = [
+    "Christian Beilschmidt <christian.beilschmidt@geoengine.de>",
+    "Johannes Drönner <johannes.droenner@geoengine.de>",
+    "Michael Mattig <michael.mattig@geoengine.de>",
+]
+license-file = "LICENSE"
+# documentation = "https://docs.geoengine.io"
+repository = "https://github.com/geo-engine/wildlive-token-refresher"
+
+[lints.clippy]
+cargo = { level = "warn", priority = 0 }
+complexity = { level = "warn", priority = 0 }
+style = { level = "warn", priority = 0 }
+perf = { level = "warn", priority = 0 }
+pedantic = { level = "warn", priority = 0 }
+correctness = "deny"
+
+# disable some pedantic lints
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+default_trait_access = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+module_name_repetitions = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+non_ascii_literal = { level = "allow", priority = 1 }
+option_if_let_else = { level = "allow", priority = 1 }
+similar_names = { level = "allow", priority = 1 }
+single_match_else = { level = "allow", priority = 1 }
+type_repetition_in_bounds = { level = "allow", priority = 1 }
+wildcard_imports = { level = "allow", priority = 1 }
+
+# enable some restriction lints
+dbg_macro = { level = "warn", priority = 1 }
+print_stderr = { level = "warn", priority = 1 }
+print_stdout = { level = "warn", priority = 1 }
+unimplemented = { level = "warn", priority = 1 }
+unwrap_used = { level = "warn", priority = 1 }
+
+# disable some cargo lints
+multiple_crate_versions = { level = "allow", priority = 1 }
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+clap_derive = "4.5"
+config = "0.15"
+indoc = "2"
+oauth2 = "5.0"
+openidconnect = "4.0"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+time = "0.3"
+tokio = { version = "1.48", features = ["full"] }
+tokio-cron-scheduler = { version = "0.15", features = ["signal"] }
+tokio-postgres = { version = "0.7", features = ["with-time-0_3", "with-uuid-1"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+uuid = { version = "1.17", features = [
+    "serde",
+    "v4",
+    "v5",
+] }
+url = "2.5"
+
+[dev-dependencies]
+chrono = "0.4"
+httptest = "0.16"

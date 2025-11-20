@@ -1,0 +1,214 @@
+use crate::{
+    config::CONFIG,
+    database::{Database, IdTokenPair},
+    oidc::{retrieve_access_and_refresh_token, retrieve_jwks},
+};
+use anyhow::{Context, Result};
+use clap::Parser;
+use oauth2::{RefreshToken, reqwest};
+use openidconnect::{JsonWebKeySet, core::CoreJsonWebKey};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::oneshot::{self, Receiver, Sender};
+use tokio_cron_scheduler::{Job, JobScheduler};
+use tracing::{debug, error, info, level_filters::LevelFilter};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+
+mod config;
+mod database;
+mod oidc;
+mod util;
+
+/// Refresher tool for OpenId Connect refresh tokens from the WildLIVE portal inside a Geo Engine instance.
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Refresh all tokens regardless whether they are going to expire
+    #[arg(short, long)]
+    force: bool,
+
+    // Run refresher every `refresh_interval` seconds
+    #[arg(short, long)]
+    scheduled: bool,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    setup_tracing();
+
+    let args = Args::parse();
+
+    let schedule_duration = if args.scheduled {
+        CONFIG.refresh_interval
+    } else {
+        Duration::ZERO
+    };
+    let comparison_duration = if args.force {
+        // PostgreSQL cannot store years over `247530526765`, so we cannot use Duration::MAX here.
+        let day = 24;
+        let year = 365 * day;
+        Duration::from_hours(100 * year)
+    } else {
+        CONFIG.refresh_buffer_pct * CONFIG.refresh_interval
+    };
+
+    let mut scheduler = JobScheduler::new().await?;
+    let shutdown_rx = handle_shutdown(&mut scheduler);
+    let (oneshot_tx, oneshot_rx) = oneshot::channel();
+    let oneshot_tx = Arc::new(Mutex::new(Some(oneshot_tx)));
+    scheduler.shutdown_on_ctrl_c();
+    scheduler.start().await?;
+
+    if args.scheduled {
+        scheduler
+            .add(Job::new_repeated_async(
+                schedule_duration,
+                move |_uuid, _l| {
+                    Box::pin(async move {
+                        info!(
+                            "Running refresh after {} seconds passed",
+                            schedule_duration.as_secs()
+                        );
+
+                        if let Err(err) = refresh_tokens(comparison_duration).await {
+                            error!("Error during refresh: {err:?}");
+                        }
+                    })
+                },
+            )?)
+            .await?;
+    } else {
+        scheduler
+            .add(Job::new_one_shot_async(
+                schedule_duration,
+                move |_uuid, _l| {
+                    let oneshot_tx = oneshot_tx.clone();
+
+                    Box::pin(async move {
+                        info!("Running refresh once");
+
+                        if let Err(err) = refresh_tokens(comparison_duration).await {
+                            error!("Error during refresh: {err:?}");
+                        }
+
+                        if let Err(err) = handle_shutdown_signal(&oneshot_tx) {
+                            error!("Error while sending shutdown signal: {err}");
+                        }
+                    })
+                },
+            )?)
+            .await?;
+    }
+
+    tokio::select! {
+        shutdown_rx = shutdown_rx => shutdown_rx,
+        oneshot_rx = oneshot_rx => oneshot_rx,
+    }
+    .context("Improper shutdown")
+}
+
+fn setup_tracing() {
+    let default_log_level = if cfg!(debug_assertions) {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::INFO
+    };
+
+    tracing_subscriber::registry()
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(default_log_level.into())
+                .from_env_lossy(),
+        )
+        .with(tracing_subscriber::fmt::layer().pretty())
+        .init();
+}
+
+/// Add code to be run during/after shutdown
+fn handle_shutdown(scheduler: &mut JobScheduler) -> Receiver<()> {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let shutdown_tx = Arc::new(Mutex::new(Some(shutdown_tx)));
+
+    scheduler.set_shutdown_handler(Box::new(move || {
+        let shutdown_tx = shutdown_tx.clone();
+        Box::pin(async move {
+            info!("Shutting down");
+            if let Err(err) = handle_shutdown_signal(&shutdown_tx) {
+                error!("Error during shutdown: {}", err);
+            }
+        })
+    }));
+
+    shutdown_rx
+}
+
+fn handle_shutdown_signal(shutdown_tx: &Mutex<Option<Sender<()>>>) -> Result<()> {
+    let mut shutdown_tx_lock = shutdown_tx
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Poisoned shutdown channel"))?;
+    let shutdown_tx = shutdown_tx_lock
+        .take()
+        .context("Shutdown channel aready used")?;
+    shutdown_tx
+        .send(())
+        .map_err(|()| anyhow::anyhow!("Cannot propagate shutdown signal"))
+}
+
+async fn refresh_tokens(refresh_interval: Duration) -> Result<()> {
+    let http_client = reqwest::ClientBuilder::new()
+        // Following redirects opens the client up to SSRF vulnerabilities.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let jwks = retrieve_jwks(&http_client, &CONFIG.oidc.issuer).await?;
+
+    let database = Database::new(&CONFIG.postgres).await?;
+
+    let mut num_updated = 0;
+
+    for IdTokenPair { id, refresh_token } in database.get_refresh_tokens(refresh_interval).await? {
+        match refresh_tokens_for_provider(
+            &database,
+            &http_client,
+            jwks.clone(),
+            IdTokenPair { id, refresh_token },
+        )
+        .await
+        {
+            Ok(()) => {
+                num_updated += 1;
+                debug!(provider = ?id, "Refreshed token");
+            }
+            Err(err) => {
+                error!(provider = ?id, "Error refreshing token: {err:?}");
+            }
+        }
+    }
+
+    info!("Updated {num_updated} refresh tokens");
+
+    Ok(())
+}
+
+async fn refresh_tokens_for_provider(
+    database: &Database,
+    http_client: &reqwest::Client,
+    jwks: JsonWebKeySet<CoreJsonWebKey>,
+    IdTokenPair { id, refresh_token }: IdTokenPair,
+) -> Result<()> {
+    let new_pair = IdTokenPair {
+        id,
+        refresh_token: retrieve_access_and_refresh_token(
+            http_client,
+            &CONFIG.oidc,
+            jwks.clone(),
+            &RefreshToken::new(refresh_token),
+        )
+        .await?
+        .refresh_token
+        .into_secret(),
+    };
+
+    database.update_refresh_token(new_pair).await
+}

@@ -1,0 +1,15 @@
+refresh_interval = { secs = 300, nanos = 0 }
+refresh_buffer_pct = 50
+
+[oidc]
+issuer = "https://webapp.senckenberg.de/auth/realms/wildlive-portal"
+client_id = "geoengine"
+client_secret = ""
+
+[postgres]
+host = "localhost"
+port = 5432
+database = "geoengine"
+schema = "geoengine"
+user = "geoengine"
+password = "geoengine"
