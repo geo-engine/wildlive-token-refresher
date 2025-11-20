@@ -31,6 +31,9 @@ jobs:
           VERSION=$(cargo metadata --format-version=1 | jq -r '.packages[] | select(.name=="wildlive-token-refresher") | .version')
           echo "TAG_NAME=$VERSION" >> $GITHUB_ENV
 
+      - name: Login to quay.io
+        run: podman login -u="geoengine+bot" -p="${{secrets.QUAY_IO_TOKEN}}" quay.io
+
       - name: Build container
         run: podman build -t ${{env.CONTAINER_NAME}}:${{env.TAG_NAME}} .
 
