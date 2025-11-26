@@ -40,11 +40,6 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let schedule_duration = if args.scheduled {
-        CONFIG.refresh_interval
-    } else {
-        Duration::ZERO
-    };
     let comparison_duration = if args.force {
         // PostgreSQL cannot store years over `247530526765`, so we cannot use Duration::MAX here.
         let day = 24;
@@ -61,15 +56,38 @@ async fn main() -> Result<()> {
     scheduler.shutdown_on_ctrl_c();
     scheduler.start().await?;
 
+    // Initial run of the refresher
+    scheduler
+        .add(Job::new_one_shot_async(
+            Duration::ZERO,
+            move |_uuid, _l| {
+                let oneshot_tx = oneshot_tx.clone();
+
+                Box::pin(async move {
+                    info!("Running refresh once");
+
+                    if let Err(err) = refresh_tokens(comparison_duration).await {
+                        error!("Error during refresh: {err:?}");
+                    }
+
+                    if let Err(err) = handle_shutdown_signal(&oneshot_tx) {
+                        error!("Error while sending shutdown signal: {err}");
+                    }
+                })
+            },
+        )?)
+        .await?;
+
     if args.scheduled {
+        // Schedule periodic runs of the refresher
         scheduler
             .add(Job::new_repeated_async(
-                schedule_duration,
+                CONFIG.refresh_interval,
                 move |_uuid, _l| {
                     Box::pin(async move {
                         info!(
                             "Running refresh after {} seconds passed",
-                            schedule_duration.as_secs()
+                            CONFIG.refresh_interval.as_secs()
                         );
 
                         if let Err(err) = refresh_tokens(comparison_duration).await {
@@ -79,34 +97,15 @@ async fn main() -> Result<()> {
                 },
             )?)
             .await?;
+    }
+
+    oneshot_rx.await?; // In each case, wait for the initial run to finish
+
+    if args.scheduled {
+        shutdown_rx.await.context("Improper shutdown")
     } else {
-        scheduler
-            .add(Job::new_one_shot_async(
-                schedule_duration,
-                move |_uuid, _l| {
-                    let oneshot_tx = oneshot_tx.clone();
-
-                    Box::pin(async move {
-                        info!("Running refresh once");
-
-                        if let Err(err) = refresh_tokens(comparison_duration).await {
-                            error!("Error during refresh: {err:?}");
-                        }
-
-                        if let Err(err) = handle_shutdown_signal(&oneshot_tx) {
-                            error!("Error while sending shutdown signal: {err}");
-                        }
-                    })
-                },
-            )?)
-            .await?;
+        Ok(())
     }
-
-    tokio::select! {
-        shutdown_rx = shutdown_rx => shutdown_rx,
-        oneshot_rx = oneshot_rx => oneshot_rx,
-    }
-    .context("Improper shutdown")
 }
 
 fn setup_tracing() {
