@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use indoc::indoc;
+use time::OffsetDateTime;
 use tokio_postgres::{Client, NoTls};
 use tracing::error;
 use uuid::Uuid;
@@ -32,7 +33,7 @@ impl Database {
     pub async fn get_refresh_tokens(
         &self,
         comparison_duration: Duration,
-    ) -> Result<Vec<IdTokenPair>> {
+    ) -> Result<Vec<ConnectorRefreshToken>> {
         let now = time::OffsetDateTime::now_utc();
         let comparison_duration = time::Duration::try_from(comparison_duration)?;
         let now_plus_duration = now.saturating_add(comparison_duration);
@@ -43,7 +44,8 @@ impl Database {
                 indoc! {"
                 SELECT
                     id,
-                    (((definition).wildlive_data_connector_definition).auth).refresh_token AS refresh_token
+                    (((definition).wildlive_data_connector_definition).auth).refresh_token AS refresh_token,
+                    (((definition).wildlive_data_connector_definition).auth).expiry_date AS expiry_date
                 FROM
                     layer_providers
                 WHERE
@@ -62,9 +64,10 @@ impl Database {
         results
             .iter()
             .map(|row| {
-                Ok(IdTokenPair {
+                Ok(ConnectorRefreshToken {
                     id: row.try_get("id")?,
                     refresh_token: row.try_get("refresh_token")?,
+                    expiry_date: row.try_get::<_, time::OffsetDateTime>("expiry_date")?,
                 })
             })
             .collect()
@@ -73,7 +76,11 @@ impl Database {
     // TODO: bulk insert multiple tokens at once
     pub async fn update_refresh_token(
         &self,
-        IdTokenPair { id, refresh_token }: IdTokenPair,
+        ConnectorRefreshToken {
+            id,
+            refresh_token,
+            expiry_date,
+        }: ConnectorRefreshToken,
     ) -> Result<()> {
         self.client
             .execute(
@@ -81,11 +88,12 @@ impl Database {
                 UPDATE
                     layer_providers
                 SET
-                    definition.wildlive_data_connector_definition.auth.refresh_token = $2
+                    definition.wildlive_data_connector_definition.auth.refresh_token = $2,
+                    definition.wildlive_data_connector_definition.auth.expiry_date = $3
                 WHERE
                     id = $1
                 "},
-                &[&id, &refresh_token],
+                &[&id, &refresh_token, &expiry_date],
             )
             .await?;
         Ok(())
@@ -93,7 +101,8 @@ impl Database {
 }
 
 #[derive(Debug)]
-pub struct IdTokenPair {
+pub struct ConnectorRefreshToken {
     pub id: Uuid,
     pub refresh_token: String,
+    pub expiry_date: OffsetDateTime,
 }

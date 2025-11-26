@@ -1,6 +1,6 @@
 use crate::{
     config::CONFIG,
-    database::{Database, IdTokenPair},
+    database::{ConnectorRefreshToken, Database},
     oidc::{retrieve_access_and_refresh_token, retrieve_jwks},
 };
 use anyhow::{Context, Result};
@@ -166,12 +166,21 @@ async fn refresh_tokens(refresh_interval: Duration) -> Result<()> {
 
     let mut num_updated = 0;
 
-    for IdTokenPair { id, refresh_token } in database.get_refresh_tokens(refresh_interval).await? {
+    for ConnectorRefreshToken {
+        id,
+        refresh_token,
+        expiry_date,
+    } in database.get_refresh_tokens(refresh_interval).await?
+    {
         match refresh_tokens_for_provider(
             &database,
             &http_client,
             jwks.clone(),
-            IdTokenPair { id, refresh_token },
+            ConnectorRefreshToken {
+                id,
+                refresh_token,
+                expiry_date,
+            },
         )
         .await
         {
@@ -194,20 +203,29 @@ async fn refresh_tokens_for_provider(
     database: &Database,
     http_client: &reqwest::Client,
     jwks: JsonWebKeySet<CoreJsonWebKey>,
-    IdTokenPair { id, refresh_token }: IdTokenPair,
-) -> Result<()> {
-    let new_pair = IdTokenPair {
+    ConnectorRefreshToken {
         id,
-        refresh_token: retrieve_access_and_refresh_token(
-            http_client,
-            &CONFIG.oidc,
-            jwks.clone(),
-            &RefreshToken::new(refresh_token),
-        )
-        .await?
-        .refresh_token
-        .into_secret(),
+        refresh_token,
+        expiry_date: _,
+    }: ConnectorRefreshToken,
+) -> Result<()> {
+    let token_response = retrieve_access_and_refresh_token(
+        http_client,
+        &CONFIG.oidc,
+        jwks.clone(),
+        &RefreshToken::new(refresh_token),
+    )
+    .await?;
+
+    let now = time::OffsetDateTime::now_utc();
+    let expiry_duration = time::Duration::seconds(token_response.expires_in as i64);
+    let expiry_date = now.saturating_add(expiry_duration);
+
+    let connector_refresh_token = ConnectorRefreshToken {
+        id,
+        refresh_token: token_response.refresh_token.into_secret(),
+        expiry_date,
     };
 
-    database.update_refresh_token(new_pair).await
+    database.update_refresh_token(connector_refresh_token).await
 }
