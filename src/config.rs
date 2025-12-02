@@ -86,3 +86,18 @@ fn get_config() -> anyhow::Result<Config> {
 
     Ok(builder.build()?.try_deserialize()?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_adds_a_buffer_to_a_duration() {
+        let duration = Duration::from_secs(100);
+        let buffer = RefreshBuffer(20); // 20%
+
+        let buffered_duration = buffer * duration;
+
+        assert_eq!(buffered_duration.as_secs(), 120);
+    }
+}

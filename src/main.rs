@@ -40,14 +40,8 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    let comparison_duration = if args.force {
-        // PostgreSQL cannot store years over `247530526765`, so we cannot use Duration::MAX here.
-        let day = 24;
-        let year = 365 * day;
-        Duration::from_hours(100 * year)
-    } else {
-        CONFIG.refresh_buffer_pct * CONFIG.refresh_interval
-    };
+    let comparison_duration =
+        (!args.force).then(|| CONFIG.refresh_buffer_pct * CONFIG.refresh_interval);
 
     let mut scheduler = JobScheduler::new().await?;
     let shutdown_rx = handle_shutdown(&mut scheduler);
@@ -155,7 +149,7 @@ fn handle_shutdown_signal(shutdown_tx: &Mutex<Option<Sender<()>>>) -> Result<()>
         .map_err(|()| anyhow::anyhow!("Cannot propagate shutdown signal"))
 }
 
-async fn refresh_tokens(refresh_interval: Duration) -> Result<()> {
+async fn refresh_tokens(refresh_interval: Option<Duration>) -> Result<()> {
     let http_client = reqwest::ClientBuilder::new()
         // Following redirects opens the client up to SSRF vulnerabilities.
         .redirect(reqwest::redirect::Policy::none())
@@ -218,7 +212,7 @@ async fn refresh_tokens_for_provider(
     .await?;
 
     let now = time::OffsetDateTime::now_utc();
-    let expiry_duration = time::Duration::seconds(token_response.expires_in as i64);
+    let expiry_duration = time::Duration::seconds(token_response.refresh_expires_in as i64);
     let expiry_date = now.saturating_add(expiry_duration);
 
     let connector_refresh_token = ConnectorRefreshToken {

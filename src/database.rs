@@ -32,11 +32,16 @@ impl Database {
 
     pub async fn get_refresh_tokens(
         &self,
-        comparison_duration: Duration,
+        comparison_duration: Option<Duration>,
     ) -> Result<Vec<ConnectorRefreshToken>> {
-        let now = time::OffsetDateTime::now_utc();
-        let comparison_duration = time::Duration::try_from(comparison_duration)?;
-        let now_plus_duration = now.saturating_add(comparison_duration);
+        let now_plus_duration = if let Some(comparison_duration) = comparison_duration {
+            let now = time::OffsetDateTime::now_utc();
+            let comparison_duration = time::Duration::try_from(comparison_duration)?;
+            now.saturating_add(comparison_duration)
+        } else {
+            OffsetDateTime::now_utc()
+        };
+        let ignore_expiry = comparison_duration.is_none();
 
         let results = self
             .client
@@ -53,9 +58,10 @@ impl Database {
                     AND
                     (((definition).wildlive_data_connector_definition).auth).refresh_token IS NOT NULL
                     AND
-                    $1 >= (((definition).wildlive_data_connector_definition).auth).expiry_date
+                    ($1 OR $2 >= (((definition).wildlive_data_connector_definition).auth).expiry_date)
                 "},
                 &[
+                    (&ignore_expiry, tokio_postgres::types::Type::BOOL),
                     (&now_plus_duration, tokio_postgres::types::Type::TIMESTAMPTZ),
                 ],
             )
